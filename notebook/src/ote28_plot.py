@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import math
 
 from matplotlib import style, pyplot as plt
 from matplotlib import rcParams
@@ -7,6 +8,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 from mpl_toolkits.mplot3d import Axes3D
 from ote28_globals import Ote28Globals as Globals
 import numpy as np
+import math
 
 
 class Ote28Plot:
@@ -31,6 +33,8 @@ class Ote28Plot:
         if skip:
             return
 
+        units = kwargs.get('units', 'arb. units')
+        is_log = kwargs.get('log', False)
         xmax, ymax = image.shape
         xlim = kwargs.get('xlim', [0, xmax - 1])
         ylim = kwargs.get('ylim', [0, ymax - 1])
@@ -44,9 +48,16 @@ class Ote28Plot:
         if 'sigma_cut' in kwargs:
             sc = kwargs.get('sigma_cut', 3.0)
             vmin, vmax = vmed - sc * vstd, vmed + sc * vstd
-        print(title)
-        print("Image median = {:10.3f}, stdev = {:10.3f}".format(vmed, vstd))
-        print("vmin, vmax = {:10.3f}{:10.3f}".format(vmin, vmax))
+
+        if is_log:
+            vmin, vmax = math.log10(vmin), math.log10(vmax)
+            img = np.abs(img)
+            img = np.log10(img)
+            units = "log10(abs(val) / {:s})".format(units)
+
+#        print(title)
+#        print("Image median = {:10.3f}, stdev = {:10.3f}".format(vmed, vstd))
+#        print("vmin, vmax = {:10.3f}{:10.3f}".format(vmin, vmax))
 
         stars = kwargs.get('stars', [])
         fig, ax = plt.subplots()
@@ -55,7 +66,8 @@ class Ote28Plot:
                          extent=(xmin - 0.5, xmax + 0.5, ymin - 0.5, ymax + 0.5),
                          interpolation='nearest', cmap='binary',  # cmap='hot'
                          vmin=vmin, vmax=vmax, origin='lower')
-        plt.colorbar()
+        cbar = plt.colorbar()
+        cbar.set_label(units)
         for star in stars:
             plt.xlim(xlim)
             plt.ylim(ylim)
@@ -103,43 +115,84 @@ class Ote28Plot:
         return
 
     def plot_eef_list(self, radii, eefs, **kwargs):
-        import math
 
-        plot_average = kwargs.get('plot_average', True)
+        plot_average = kwargs.get('plot_average', False)
         r_sample = kwargs.get('r_sample', 1.9)
         r_max = kwargs.get('r_max', 20.0)
-        colour = kwargs.get('colour', 'blue')
+        lc_list = kwargs.get('lc_list', ['blue'])
+        ls_list = kwargs.get('ls_list', ['solid'])
+        lw_list = kwargs.get('lw_list', [1.5])
+
         title = kwargs.get('title', '')
 
         plt.xlabel('log10(Radius / pixel)')
         plt.ylabel('Encircled energy fraction')
         plt.title(title)
 
-        xtick_lin_vals = np.array([0.1, 1, 2, 5, 10, r_max])
+        xtick_lin_vals = np.array([0.5, 1, 2, 5, 10, r_max])
         xtick_vals = np.log10(xtick_lin_vals)
         plt.xticks(xtick_vals, xtick_lin_vals)
-        plt.xlim(np.log10([0.1, r_max]))
+        plt.xlim(np.log10([0.5, r_max]))
 
-        n_profiles, _ = eefs.shape
+        n_obs, n_profiles, n_radii = eefs.shape
         rl = np.log10(radii)
-        for i in range(0, n_profiles):
-            lw, ls = 1.0, 'solid'
-            plt.plot(rl, eefs[i], color='grey', ls=ls, lw=lw)
-        eef_mean = None
-        if plot_average:
-            eef_mean = np.mean(eefs, axis=0)
-            eef_std = np.std(eefs, axis=0)
-            plt.plot(rl, eef_mean, color=colour, ls=ls, lw=1.5)
-            ee_sample = np.interp(r_sample, radii, eef_mean)
-            ee_sample_std = np.interp(r_sample, radii, eef_std)
-            lrs = math.log10(r_sample)
-            plt.scatter(lrs, ee_sample, color=colour, marker='o')
-            text = "EE @ {:3.1f} pix = {:4.3f} +- {:4.3f}".format(r_sample, ee_sample, ee_sample_std)
-            plt.text(lrs, 0.95*ee_sample, text, color=colour, va='top')
+        for j in range(0, n_obs):
+            lc = 'grey' if lc_list is None else lc_list[j]
+            ls = 'solid' if ls_list is None else ls_list[j]
+            lw = 1.5 if lw_list is None else lw_list[j]
+            for i in range(0, n_profiles):
+                plt.plot(rl, eefs[j, i], color=lc, ls=ls, lw=lw)
+            eef_mean = None
+            if plot_average:
+                eef_mean = np.squeeze(np.mean(eefs, axis=0), axis=0)
+                eef_std = np.squeeze(np.std(eefs, axis=0), axis=0)
+                plt.plot(rl, eef_mean, color='blue', ls=ls, lw=1.5)
+                ee_sample = np.interp(r_sample, radii, eef_mean)
+                ee_sample_std = np.interp(r_sample, radii, eef_std)
+                lrs = math.log10(r_sample)
+                plt.scatter(lrs, ee_sample, color='blue', marker='o')
+                text = "EE @ {:3.1f} pix = {:4.3f} +- {:4.3f}".format(r_sample, ee_sample, ee_sample_std)
+                plt.text(lrs, 0.95*ee_sample, text, color='blue', va='top')
 
         plt.show()
         return eef_mean
 
+    def plot_profile_list(self, profile_list, xlim, **kwargs):
+
+        fit_profile = kwargs.get('fit_profile', None)
+        normalise = kwargs.get('normalise', False)
+        title = kwargs.get('title', '')
+        lc_list = kwargs.get('lc_list', ['blue'])
+        ls_list = kwargs.get('ls_list', ['solid'])
+        lw_list = kwargs.get('lw_list', [1.5])
+
+        plt.xlabel('pixel')
+        plt.ylabel('profile')
+        plt.title(title)
+        plt.xlim(xlim)
+
+        for j, profile in enumerate(profile_list):
+            lc = 'grey' if lc_list is None else lc_list[j]
+            ls = 'solid' if ls_list is None else ls_list[j]
+            lw = 1.5 if lw_list is None else lw_list[j]
+
+            identifier, u_vals, p, params = profile
+            fit, covar = params
+            amp, fwhm, xpk = fit
+            if normalise:
+                pmax = np.max(p)
+                p = p / pmax
+                amp /= pmax
+
+            plt.plot(u_vals, p, color=lc, ls=ls, lw=lw, marker='o', fillstyle='none')
+            if profile is fit_profile:
+                text = "FWHM = {:5.3f} pix".format(fwhm)
+                plt.text(3.0, 0.25, text, color=lc, va='top')
+                xf = np.arange(u_vals[0], u_vals[-1], 0.1)
+                yf = Globals.Gauss(xf, amp, fwhm, xpk)
+                plt.plot(xf, yf, color=lc, lw=1.5, ls='dotted')
+        plt.show()
+        return
 
     def plot_cv3_eefs(self, eef_list, code_list, f0rad, f0ee):
         import math
@@ -172,41 +225,5 @@ class Ote28Plot:
         f0radl = math.log10(f0rad)
         plt.plot([f0radl], [f0ee], color=colour, marker='o')
         plt.text(math.log10(2.1), f0ee, '61.8 % @ r=1.9 pix.', color=colour, va='top', ha='left')
-        plt.show()
-        return
-
-    def plot_profile(self, profile, code_list, axis, **kwargs):
-        plot_fit = kwargs.get('plot_fit', False)
-        is_cv3 = kwargs.get('is_cv3', False)
-        title = ''
-        identifier, x, y, params = profile
-        group, image_id, axis, fit_type = identifier
-        fit, covar = params
-        if plot_fit:
-            amp, fwhm, xpk = fit
-            title = "{:s} / fwhm= {:10.3f}".format(axis, fwhm)
-        title = kwargs.get('title', title)
-
-        plt.xlabel('pixel')
-        plt.ylabel('Profile')
-        plt.title(title)
-        plt.xlim([-5.0, 5.0])
-
-        n_cv3 = len(code_list)
-        i = 0
-        plt.plot([0., 0.], [0., 0.4], color='grey', lw=0.5)
-        colour, lw, ls = 'grey', 1.0, 'solid'
-        if i < n_cv3 and is_cv3:
-            colour, lw, ls = self.get_cv3_plot_parameters(code_list[i])
-        else:
-            colour, lw, ls = 'grey', 1.5, 'solid'
-        plt.plot(x, y, color=colour, lw=lw, ls=ls, marker='+')
-        if plot_fit:
-            xf = np.arange(-5.0, 5.0, 0.1)
-            a, b, c = fit
-            yf = Globals.Gauss(xf, a, b, c)
-            plt.plot(xf, yf, color='blue', lw=0.5, ls=ls)
-        i += 1
-
         plt.show()
         return

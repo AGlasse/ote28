@@ -56,11 +56,11 @@ class Ote28Photom:
         print("Extracting along {:s} profiles ".format(axis))
         print(fmt.format('Star ID', 'Col', 'Row', 'Flux'))
         for star in stars:
-            ident, xcen, ycen, flux = star['id'], star['x_0'], star['y_0'], star['flux_0']
+            ident, xcen, ycen, flux = star['id'], star['xcentroid'], star['ycentroid'], star['flux']
             print('{:>10d}{:10.3f}{:10.3f}{:12.1f}'.format(ident, xcen, ycen, flux))
             u_cen = round(xcen) if axis == 'row' else round(ycen)       # Nearest pixel to peak
             us = np.add(u_vals, u_cen)
-            profile = np.zeros(n_pts)
+            p = np.zeros(n_pts)     # Profile Y values
             if method == 'cut':
                 xc, yc, hu, hv = int(xcen), int(ycen), int(n_pts/2.0), int(v_coadd/2.0)
                 if axis == 'row':
@@ -69,14 +69,14 @@ class Ote28Photom:
                     y1 = yc - hv
                     y2 = yc + hv
                     subim = image[y1:y2, x1:x2]
-                    profile = np.sum(subim, 0)
+                    p = np.sum(subim, 0)
                 else:
                     x1 = xc - hv
                     x2 = xc + hv
                     y1 = yc - hu
                     y2 = yc + hu
                     subim = image[y1:y2, x1:x2]
-                    profile = np.sum(subim, 1)
+                    p = np.sum(subim, 1)
             if method == 'enslitted':
                 for i in range(0, n_pts):
                     u = us[i]
@@ -87,33 +87,45 @@ class Ote28Photom:
                     else:
                         ap_pos = xcen + k, u + k
                         aperture = RectangularAperture(ap_pos, w=v_coadd, h=u_sample)
-                    profile[i] = self.exact_rectangular(image, aperture)
-            profile = self.normalise(profile, normal)
-            fit, covar = curve_fit(Globals.Gauss, u_vals, profile)
+                    p[i] = self.exact_rectangular(image, aperture)
+            p = self.normalise(p, normal)
+            fit, covar = curve_fit(Globals.Gauss, u_vals, p)
             fit[1] = abs(fit[1])
             params = fit, covar
-            profile_list.append((identifier, u_vals, profile, params))
+            profile = identifier, u_vals, p, params
+            profile_list.append(profile)
         return profile_list
 
-    def find_sources(self, img, bkg_sigma):
+    def find_sources(self, img, bkg_sigma, sd_threshhold, sd_fwhm):
         """ Find all point sources in an image with flux above sf_threshold x bkg_sigma
 
         :param img:
         :param bkg_sigma:
         :return:
         """
-        sf_threshhold = 3
-        filter_fwhm = 2.00
-        str = "Searching for stars above {:3.1f} sigma background noise ".format(sf_threshhold)
-        str += " using a filter FWHM = {:5.2f}".format(filter_fwhm)
-        print(str)
-        dsf = photutils.DAOStarFinder(threshold=sf_threshhold * bkg_sigma, fwhm=filter_fwhm)
+        threshold = sd_threshhold * bkg_sigma
+        dsf = photutils.DAOStarFinder(threshold=threshold, fwhm=sd_fwhm)
         found_stars = dsf(img)
-        found_stars['xcentroid'].name = 'x_0'
-        found_stars['ycentroid'].name = 'y_0'
-        found_stars['flux'].name = 'flux_0'
-        print("- {:d} sources found".format(len(found_stars)))
+        # The dsf flux parameter is calculated as the peak density in the convolved image divided
+        # by the detection threshold. We scale this to give the integrated photometric signal 'phot_sig'
+        flux_param = found_stars['flux']
+        n_pixels = found_stars['npix']
+        phot_sig = flux_param * bkg_sigma * n_pixels
+        found_stars['phot_sig'] = phot_sig
+#        print("- {:d} sources found".format(len(found_stars)))
         return found_stars
+
+    def print_stars(self, stars):
+        print("Found {:d} targets".format(len(stars)))
+        fmt = "{:>10s}{:>10s}{:>10s}{:>12s}{:>12s}"
+        print(fmt.format('ID', 'xcen', 'ycen', 'phot_sig', 'pk_sig'))
+        fmt = "{:10d}{:10.3f}{:10.3f}{:12.1f}{:12.1f}"
+        for star in stars:
+            id = star['id']
+            xcen, ycen = star['xcentroid'], star['ycentroid']
+            phot_sig, phot_err = star['phot_sig'], 0.0
+            print(fmt.format(id, xcen, ycen, phot_sig, phot_err))
+        return
 
     def select_bright_stars(self, stars, **kwargs):
         # Clip bounds, xmin, xmax, ymin, ymax
@@ -124,11 +136,12 @@ class Ote28Photom:
         x1, x2, y1, y2 = field
         str = "Selecting stars with flux > {:9.1f}'.format(threshold))"
         str += " and in region x={:5.0f}-{:5.0f}, y={:5.0f}-{:5.0f}".format(x1, x2, y1, y2)
+        print(str)
         bstars = []
         for star in stars:
-            x, y = star['x_0'], star['y_0']
+            x, y = star['xcentroid'], star['ycentroid']
             noclip = (x1 < x < x2) and (y1 < y < y2)
-            if (star['flux_0'] > threshold) and noclip:
+            if (star['phot_sig'] > threshold) and noclip:
                 bstars.append(star)
         return bstars
 
@@ -146,11 +159,12 @@ class Ote28Photom:
         return bkg, bkg_sigma
 
     def find_eefs(self, radii, image, stars):
+        """ Calculate the EE curve of growth for a list of stars. """
         n_radii = len(radii)
         n_stars = len(stars)
-        eefs = np.zeros((n_stars, n_radii))
+        cog = np.zeros((n_stars, n_radii))
         for i, star in enumerate(stars):
-            ident, x, y, flux = star['id'], star['x_0'], star['y_0'], star['flux_0']
+            ident, x, y, flux = star['id'], star['xcentroid'], star['ycentroid'], star['flux']
             print('{:>5d}{:10.3f}{:10.3f}{:12.1f}'.format(ident, x, y, flux))
             centroid = x, y
 
@@ -160,8 +174,8 @@ class Ote28Photom:
                 phot = aperture_photometry(image, aperture)
                 ee[j] = phot['aperture_sum']
 
-            eefs[i, :] = ee / ee[-1]  # Normalise to last ee point in profile
-        return eefs
+            cog[i, :] = ee / ee[-1]  # Normalise to last ee point in profile
+        return cog
 
     def find_eeradii(self, eef_list, code_list, radref):
         """ Find the encircled energy at a specific radius (pixels) using linear
