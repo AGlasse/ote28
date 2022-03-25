@@ -5,7 +5,7 @@ from photutils import psf, aperture_photometry
 from photutils import Background2D, MedianBackground, CircularAperture, RectangularAperture
 from astropy.stats import SigmaClip
 from scipy.optimize import curve_fit
-from ote28_globals import Ote28Globals as Globals
+from ote28_globals import Globals as Globals
 
 
 class Ote28Photom:
@@ -22,6 +22,15 @@ class Ote28Photom:
                 sum_val = np.sum(profile)
                 profile /= sum_val
         return profile
+
+    def scale_eeds(self, eevr, **kwargs):
+        rscale = kwargs.get('rscale', None)
+        eescale = kwargs.get('eescale', None)
+        if eescale is not None:
+            eevr_out = eevr[0], eevr[1], eescale * eevr[2], eescale * eevr[3]
+        if rscale is not None:
+            eevr_out = eevr[0], eevr[1] * rscale, eevr[2], eevr[3]
+        return eevr_out
 
     def combine_profiles(self, profiles):
         """ Combine multiple equal length profiles into a single x ordered profile. """
@@ -97,7 +106,10 @@ class Ote28Photom:
         return profile_list
 
     def find_sources(self, img, bkg_sigma, sd_threshhold, sd_fwhm):
-        """ Find all point sources in an image with flux above sf_threshold x bkg_sigma
+        """ Find all point sources in an image with flux above bkg_sigma x sd_threshold
+        where bkd_sigma is the background uncertainty per pixel, and sd_threshold is the
+        factor by which the mean source flux per pixel when the image is convolved with
+        a Gaussian of sd_fwhm.
 
         :param img:
         :param bkg_sigma:
@@ -118,24 +130,26 @@ class Ote28Photom:
     def print_stars(self, stars):
         print("Found {:d} targets".format(len(stars)))
         fmt = "{:>10s}{:>10s}{:>10s}{:>12s}{:>12s}"
-        print(fmt.format('ID', 'xcen', 'ycen', 'phot_sig', 'pk_sig'))
+        print(fmt.format('ID', 'xcen', 'ycen', 'sig_aper', 'sig_pix'))
         fmt = "{:10d}{:10.3f}{:10.3f}{:12.1f}{:12.1f}"
         for star in stars:
             id = star['id']
             xcen, ycen = star['xcentroid'], star['ycentroid']
-            phot_sig, phot_err = star['phot_sig'], 0.0
-            print(fmt.format(id, xcen, ycen, phot_sig, phot_err))
+            sig_aper, phot_err = star['phot_sig'], 0.0
+            n_pix = star['npix']
+            sig_pix = sig_aper / n_pix
+            print(fmt.format(id, xcen, ycen, sig_aper, sig_pix))
         return
 
     def select_bright_stars(self, stars, **kwargs):
         # Clip bounds, xmin, xmax, ymin, ymax
-        def_field = 550, 950, 50, 950
-        field = kwargs.get('field', def_field)
+        default_field = 550, 950, 50, 950
+        field = kwargs.get('field', default_field)
         threshold = kwargs.get('threshold', 70.0)
 
         x1, x2, y1, y2 = field
-        str = "Selecting stars with flux > {:9.1f}'.format(threshold))"
-        str += " and in region x={:5.0f}-{:5.0f}, y={:5.0f}-{:5.0f}".format(x1, x2, y1, y2)
+        str = "Selecting stars with flux > {:9.1f}".format(threshold)
+        str += " in region x={:5.0f}-{:5.0f}, y={:5.0f}-{:5.0f}".format(x1, x2, y1, y2)
         print(str)
         bstars = []
         for star in stars:
@@ -158,11 +172,13 @@ class Ote28Photom:
         print("Background RMS    ={:10.1f} MJy/sterad".format(bkg_sigma))
         return bkg, bkg_sigma
 
-    def find_eefs(self, radii, image, stars):
+    def find_eefs(self, radii, observation):
         """ Calculate the EE curve of growth for a list of stars. """
+        name, image, stars = observation
         n_radii = len(radii)
         n_stars = len(stars)
-        cog = np.zeros((n_stars, n_radii))
+        ee_refs = np.zeros(n_stars)         # Calculate reference EE for each star
+        ees = np.zeros((n_stars, n_radii))
         for i, star in enumerate(stars):
             ident, x, y, flux = star['id'], star['xcentroid'], star['ycentroid'], star['flux']
             print('{:>5d}{:10.3f}{:10.3f}{:12.1f}'.format(ident, x, y, flux))
@@ -174,23 +190,64 @@ class Ote28Photom:
                 phot = aperture_photometry(image, aperture)
                 ee[j] = phot['aperture_sum']
 
-            cog[i, :] = ee / ee[-1]  # Normalise to last ee point in profile
-        return cog
+            ee_norm = ee[-1]
+            ee = ee / ee_norm  # Normalise to last ee point in profile
+            ee_refs[i] = self.interpolate(radii, ee, Globals.ref_radius)
+            ees[i, :] = ee
+        return name, radii, ees, ee_refs
 
-    def find_eeradii(self, eef_list, code_list, radref):
+    def average_ee_list(self, eevr_list):
+        """ Find mean and stdev of a list of EE(r) profiles.  It is assumed that
+        all profiles are sampled on the same radius values
+        """
+        ee_list, ee_refs = [], []
+        for eevr in eevr_list:
+            name, radii, ees, ee_ref = eevr
+            ee_list.extend(ees)
+            ee_refs.extend(ee_ref)
+        ee_array = np.array(ee_list)
+        ee_ave = np.expand_dims(np.mean(ee_array, axis=0), axis=0)
+        ee_ref_ave = np.mean(np.array(ee_refs))
+        eevr_ave = name + 'ave', radii, ee_ave, ee_ref_ave
+        ee_std = np.expand_dims(np.std(ee_array, axis=0), axis=0)
+        ee_ref_std = np.std(np.array(ee_refs))
+        eevr_std = name + 'err', radii, ee_std, ee_ref_std
+        return eevr_ave, eevr_std
+
+    def interpolate(self, radii, ee, ref_radius):
         """ Find the encircled energy at a specific radius (pixels) using linear
         interpolation
         """
-        eerefs = np.zeros(len(code_list))
-        j = 0
-        for radii, eef in eef_list:
-            iz = np.where(radii > radref)
-            i = iz[0][0]
-            factor = (eef[i] - eef[i-1]) / (radii[i] - radii[i-1])
-            eeref = eef[i-1] + (radref - radii[i-1]) * factor
-            print(j, code_list[j], radref, factor, eeref)
-            eerefs[j] = eeref
-            j += 1
+        idxs = np.where(radii > ref_radius)
+        idx = idxs[0][0]
+        dr = radii[idx] - radii[idx-1]
+        dr_ref = ref_radius - radii[idx - 1]
+        dee_dr = (ee[idx] - ee[idx-1]) / dr
+        eeref = ee[idx-1] + dr_ref * dee_dr
+        return eeref
+
+
+    def find_ee_at_radius(self, eevr_list, ref_radius):
+        """ Find the encircled energy at a specific radius (pixels) using linear
+        interpolation
+        """
+        eerefs = []
+        for j, eevr in enumerate(eevr_list):
+            eeref_star = []
+            _, rad, ees, ee_ref = eevr
+            idxs = np.where(rad > ref_radius)
+            idx = idxs[0][0]
+            dr = rad[idx] - rad[idx-1]
+            dr_ref = ref_radius - rad[idx - 1]
+            n_stars, n_samples = ees.shape
+            for i in range(0, n_stars):
+                ee = ees[i]
+                dee_dr = (ee[idx] - ee[idx-1]) / dr
+                eeref = ee[idx-1] + dr_ref * dee_dr
+                eeref_star.append(eeref)
+            eeref_mean = np.mean(np.array(eeref_star))
+            print("Mean EE = {:8.3f}".format(eeref_mean))
+            eerefs.append(eeref_star)
         return eerefs
 
     def exact_rectangular(self, image, aperture):
