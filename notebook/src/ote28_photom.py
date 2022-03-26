@@ -32,79 +32,6 @@ class Ote28Photom:
             eevr_out = eevr[0], eevr[1] * rscale, eevr[2], eevr[3]
         return eevr_out
 
-    def combine_profiles(self, profiles):
-        """ Combine multiple equal length profiles into a single x ordered profile. """
-        nprofiles = len(profiles)
-        nvals_profile = len(profiles[0][0])
-        nvals = nvals_profile * nprofiles
-        cx, cy = np.zeros(nvals), np.zeros(nvals)
-        for p, profile in enumerate(profiles):
-            identifier, x, y, params = profile
-            fit, covar = params
-            amp, sig, phase = fit
-            i = nvals_profile * p
-            cx[i: i+nvals_profile] = x[0: nvals_profile] - phase
-            cy[i: i+nvals_profile] = y[0: nvals_profile]
-        idx_sorted = np.argsort(cx)
-        scx = cx[idx_sorted]
-        scy = cy[idx_sorted]
-        fit, covar = curve_fit(Globals.Gauss, scx, scy)
-        params = fit, covar
-        group, axis, fit_type, image_id = identifier
-        com_identifier = group, axis, fit_type, 'combined'
-        return com_identifier, scx, scy, params
-
-    def find_profiles(self, identifier, u_vals, v_coadd, image, stars, profile_list, **kwargs):
-        group, code, axis, normal = identifier
-        delta_u = u_vals[1] - u_vals[0]
-        u_sample = kwargs.get('u_sample', delta_u)
-        method = kwargs.get('method', 'enslitted')
-
-        n_pts = len(u_vals)
-        fmt = "{:10s}{:10s}{:10s}{:12s}"
-        print("Extracting along {:s} profiles ".format(axis))
-        print(fmt.format('Star ID', 'Col', 'Row', 'Flux'))
-        for star in stars:
-            ident, xcen, ycen, flux = star['id'], star['xcentroid'], star['ycentroid'], star['flux']
-            print('{:>10d}{:10.3f}{:10.3f}{:12.1f}'.format(ident, xcen, ycen, flux))
-            u_cen = round(xcen) if axis == 'row' else round(ycen)       # Nearest pixel to peak
-            us = np.add(u_vals, u_cen)
-            p = np.zeros(n_pts)     # Profile Y values
-            if method == 'cut':
-                xc, yc, hu, hv = int(xcen), int(ycen), int(n_pts/2.0), int(v_coadd/2.0)
-                if axis == 'row':
-                    x1 = xc - hu
-                    x2 = xc + hu
-                    y1 = yc - hv
-                    y2 = yc + hv
-                    subim = image[y1:y2, x1:x2]
-                    p = np.sum(subim, 0)
-                else:
-                    x1 = xc - hv
-                    x2 = xc + hv
-                    y1 = yc - hu
-                    y2 = yc + hu
-                    subim = image[y1:y2, x1:x2]
-                    p = np.sum(subim, 1)
-            if method == 'enslitted':
-                for i in range(0, n_pts):
-                    u = us[i]
-                    k = 0.5     # image[0][0]'s centroid is at 0.5, 0.5
-                    if axis == 'row':
-                        ap_pos = u + k, ycen + k
-                        aperture = RectangularAperture(ap_pos, w=u_sample, h=v_coadd)
-                    else:
-                        ap_pos = xcen + k, u + k
-                        aperture = RectangularAperture(ap_pos, w=v_coadd, h=u_sample)
-                    p[i] = self.exact_rectangular(image, aperture)
-            p = self.normalise(p, normal)
-            fit, covar = curve_fit(Globals.Gauss, u_vals, p)
-            fit[1] = abs(fit[1])
-            params = fit, covar
-            profile = identifier, u_vals, p, params
-            profile_list.append(profile)
-        return profile_list
-
     def find_sources(self, img, bkg_sigma, sd_threshhold, sd_fwhm):
         """ Find all point sources in an image with flux above bkg_sigma x sd_threshold
         where bkd_sigma is the background uncertainty per pixel, and sd_threshold is the
@@ -124,7 +51,6 @@ class Ote28Photom:
         n_pixels = found_stars['npix']
         phot_sig = flux_param * bkg_sigma * n_pixels
         found_stars['phot_sig'] = phot_sig
-#        print("- {:d} sources found".format(len(found_stars)))
         return found_stars
 
     def print_stars(self, stars):
@@ -225,7 +151,6 @@ class Ote28Photom:
         dee_dr = (ee[idx] - ee[idx-1]) / dr
         eeref = ee[idx-1] + dr_ref * dee_dr
         return eeref
-
 
     def find_ee_at_radius(self, eevr_list, ref_radius):
         """ Find the encircled energy at a specific radius (pixels) using linear

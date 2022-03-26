@@ -7,7 +7,9 @@ import numpy as np
 
 from ote28_plot import Ote28Plot
 from ote28_photom import Ote28Photom
+from ote28_profiler import Profiler
 from ote28_globals import Globals
+
 
 from matplotlib import style, pyplot as plt
 from matplotlib import rcParams
@@ -33,7 +35,6 @@ from astropy.modeling import models
 
 # set the location of the simulation files **REQUIRED**
 
-
 # set the filter for example analysis. Options are:
 # F560W, F770W, F1000W, F1130W, F1280W, F1500W, F1800W, F2100W, F2550W
 ima_filter = 'F560W'
@@ -57,12 +58,20 @@ filter='F560W'
 
 plot = Ote28Plot()
 photom = Ote28Photom()
+profiler = Profiler()
 globals = Globals()
 
 rcParams['figure.figsize'] = [8., 5.]
 plt.rcParams.update({'font.size': 12})
 
-process_cv3 = False
+# Define sampling arrays for FWHM calculations, can be different for CV3 and OTE-28.2 data sets
+u_sample = 1.0      # Sample psf once per pixel to avoid steps
+u_start = 0.0       # Offset from centroid
+u_radius = 16.0     # Maximum radial size of aperture
+v_coadd = 15.0      # Number of pixels to coadd orthogonal to profile
+u_vals = np.arange(u_start - u_radius, u_start + u_radius, u_sample)
+
+process_cv3 = True
 if process_cv3:
     dataset = 'CV3'
     cv3_dir = '../data/cv3_data/'
@@ -96,14 +105,6 @@ if process_cv3:
     row_profile_list, col_profile_list, eevr_list = [], [], []
     code_list = []
 
-    # Define sampling arrays, can be different for CV3 and OTE-28.2 data sets
-    u_sample = 1.0      # Sample psf once per pixel to avoid steps
-    u_start = 0.0       # Offset from centroid
-    u_radius = 16.0     # Maximum radial size of aperture
-    v_coadd = 15.0      # Number of pixels to coadd orthogonal to profile
-
-    u_vals = np.arange(u_start - u_radius, u_start + u_radius, u_sample)
-
     r_start, r_max, r_sample = 0.1, 16.0, 0.1
     radii = np.arange(r_start, r_max, r_sample)
 
@@ -113,12 +114,12 @@ if process_cv3:
     str += " using a filter FWHM = {:5.2f}".format(sd_fwhm)
     print(str)
     make_smoothed_image = True
-    for obs_tag in cv3_list:    #[0:1]:
-        code = obs_tag[0]
+    for obs_id in cv3_list:    #[0:1]:
+        code = obs_id[0]
         code_list.append(code)
-        cv3_img_file = cv3_dir + cv3_prog + obs_tag[1] + cv3_post
-        cv3_bgd_file = cv3_dir + cv3_prog + obs_tag[2] + cv3_post
-        print('Analysing image {:s}'.format(cv3_prog + obs_tag[1]))
+        cv3_img_file = cv3_dir + cv3_prog + obs_id[1] + cv3_post
+        cv3_bgd_file = cv3_dir + cv3_prog + obs_id[2] + cv3_post
+        print('Analysing image {:s}'.format(cv3_prog + obs_id[1]))
 
         hdu_list = fits.open(cv3_img_file)
         hdu = hdu_list[0]
@@ -156,10 +157,10 @@ if process_cv3:
         stars = photom.select_bright_stars(stars, threshold=1.0, field=field)  # Filter bright stars >100 pix from edge of field
 
         row_identifier = 'CV3', code, 'row', 'sum'  # group, image_id, axis, fit_type
-        row_profile_list = photom.find_profiles(row_identifier, u_vals, v_coadd, image, stars, row_profile_list)
+        row_profile_list = profiler.find_profiles(row_identifier, u_vals, v_coadd, image, stars, row_profile_list)
 
         col_identifier = 'CV3', code, 'col', 'sum'  # group, axis, fit_type, image_id
-        col_profile_list = photom.find_profiles(col_identifier, u_vals, v_coadd, image, stars, col_profile_list,
+        col_profile_list = profiler.find_profiles(col_identifier, u_vals, v_coadd, image, stars, col_profile_list,
                                                 axis='col', normal='sum')
         eevr = photom.find_eefs(radii, (code, image, stars))
         eevr_list.append(eevr)
@@ -170,7 +171,6 @@ if process_cv3:
                  xlim=[440, 580], ylim=[440, 580],
                  units='DN/s', skip=True)
 
-#    ee_refs = photom.find_ee_at_radius(eevr_list, Globals.ref_radius)
     for eevr in eevr_list:
         name, _, _, ee_refs = eevr
         fmt = "{:s} - EE values at r= {:6.2f}, "
@@ -187,20 +187,19 @@ if process_cv3:
                        title='CV3 EED at 0,2,4..8 mm defocus',
                        show_ref_rad=True,
                        lc_list=cv3_lc_list, ls_list=cv3_ls_list, lw_list=cv3_lw_list)
-
     plot.plot_profile_list(row_profile_list,
                            fit_profile=row_profile_list[0],
                            xlim=[-5.0, 5.0],              # Plot limits
                            normalise=True,
                            title='CV3 row profiles at 0,2,4..8 mm defocus',
+                           skip=True,
                            lc_list=cv3_lc_list, ls_list=cv3_ls_list, lw_list=cv3_lw_list)
-
-
     plot.plot_profile_list(col_profile_list,
                            fit_profile=col_profile_list[0],
                            xlim=[-5.0, 5.0],              # Plot limits
                            normalise=True,
                            title='CV3 column profiles at 0,2,4..8 mm defocus',
+                           skip=True,
                            lc_list=cv3_lc_list, ls_list=cv3_ls_list, lw_list=cv3_lw_list)
 
 process_ote28_eed = True
@@ -223,12 +222,6 @@ if process_ote28:
     xlim = [500, 900]
     ylim = [100, 900]
 
-    u_sample = 1.0          # Sample psf once per pixel to avoid steps
-    u_start = 0.0           # Offset from centroid
-    u_radius = 20.0         # Maximum radial size of aperture
-    u_vals = np.arange(u_start - u_radius, u_start + u_radius, u_sample)
-    v_coadd = 15.0          # Number of pixels to coadd orthogonal to profile
-
     r_start, r_max, r_sample = 0.1, 16.0, 0.1
     radii = np.arange(r_start, r_max, r_sample)
 
@@ -236,8 +229,8 @@ if process_ote28:
     sim_row_profile_list, sim_col_profile_list, = [], []
     n_bright = 0
     observations = []
-    for obs_tag in obs_tags[0:3]:
-        file = simulation_dir + obs_pre + obs_tag + obs_post
+    for obs_id in obs_tags[0: 2]:
+        file = simulation_dir + obs_pre + obs_id + obs_post
         print(file)
         hdu_list = fits.open(file)
         hdu = hdu_list[1]
@@ -247,16 +240,16 @@ if process_ote28:
         img[np.where(dq == 262656)] = np.nan
         img[np.where(dq == 2359812)] = np.nan
         img[np.where(dq == 2359808)] = np.nan
-        title = file.split('/')[2] + ' - obs ' + obs_tag
+        title = file.split('/')[2] + ' - obs ' + obs_id
         plot.display(img, title, vmin=0.0, vmax=2.0, skip=True)
         image_list.append(img)
 
     image_stack = np.array(image_list)
     bgd_stack = np.nanmedian(image_stack, axis=0)
     title = file.split('/')[2] + ' - stacked bgd'
-    plot.display(bgd_stack, title, vmin=0.0, vmax=2.0, skip=False)
+    plot.display(bgd_stack, title, vmin=0.0, vmax=2.0, skip=True)
     bgd_sample_region = bgd_stack[450:550, 450:550]
-    plot.histogram(bgd_sample_region, title, bins=50)
+    plot.histogram(bgd_sample_region, title, bins=50, skip=True)
     bkg_sigma = np.nanstd(bgd_sample_region)
     bkg_mean = np.nanmean(bgd_sample_region)
     fmt = "Mean stacked background = {:10.3f} +- {:10.3f}"
@@ -268,24 +261,23 @@ if process_ote28:
     print(str)
     for i, image in enumerate(image_list):
         obs = image - bgd_stack
-        obs_tag = obs_tags[i]
+        obs_id = obs_tags[i]
 
-        print("Processing observation {:s}".format(obs_tag))
+        print("Processing observation {:s}".format(obs_id))
         stars = photom.find_sources(obs, bkg_sigma, sd_threshold, sd_fwhm)
         print("Found {:d} stars".format(len(stars)))
 
         stars = photom.select_bright_stars(stars)  # Filter bright stars >100 pix from edge of field
         photom.print_stars(stars)
-        observation = obs_tag, obs, stars
+        observation = obs_id, obs, stars
         observations.append(observation)
-        title = 'obs ' + obs_tag
+        title = 'obs ' + obs_id
         plot.display(obs, title, vmin=0.0, vmax=2.0, stars=stars, skip=True)
 
 if process_ote28_eed:
-    all_eefs, all_stars = None, []
     # Read in a reference image which can be used to normalise the measured EE(r) profile.
-    ref_image_list = [('CDP PSF', 'MIRI_FM_MIRIMAGE_F560W_PSF_07.02.00.fits', 0.8),
-                      ('CDP PSF OOF', 'MIRI_FM_MIRIMAGE_F560W_PSF-OOF_07.00.00.fits', 0.9)]
+    ref_image_list = [('CDP PSF', 'MIRI_FM_MIRIMAGE_F560W_PSF_07.02.00.fits', 0.85),
+                      ('CDP PSF OOF', 'MIRI_FM_MIRIMAGE_F560W_PSF-OOF_07.00.00.fits', 1.0)]
     lc_refs = ['green', 'red']
     sd_threshold = 10.0  # N sigma above background
     sd_fwhm = 2.0
@@ -312,7 +304,7 @@ if process_ote28_eed:
     title = "Reference (CDP PSF) EE v r - F560W"
     plot.plot_eef_list(eevr_refs,
                        show_ref_rad=True, title=title,
-                       r_max=50.0, lc_list=lc_refs)
+                       r_max=50.0, lc_list=lc_refs, skip=True)
 
     eevr_all = []
     lc_all, lw_all = [], []
@@ -321,8 +313,6 @@ if process_ote28_eed:
     print("- EE(r) will be scaled by {:5.2f}".format(eescale))
     print("{:12s},{:10s},{:14s}".format('Obs', 'n_stars', 'EE(r=1.9 pix)'))
     for observation in observations:
-#        obs_tag, image, stars = observation
-        n_stars = len(stars)
         eevr = photom.find_eefs(radii, observation)
         eevr = photom.scale_eeds(eevr, eescale=eescale)
         eevr_all.append(eevr)
@@ -341,70 +331,72 @@ if process_ote28_eed:
     lc_refs.append('black')
     lw_refs = [1.0, 1.0, 1.5]
     plot.plot_eef_list(eevr_refs,
-                       show_ref_rad=True,
+                       ref_ee=(True, ee_ote_ref, ee_ote_ref_std),
                        title='OTE-28 EE(r)',
                        r_max=50.0,
                        ref_eed=(Globals.ref_radius, ee_ote_ref, ee_ote_ref_std),
                        lc_list=lc_refs, lw_list=lw_refs)
 
 if process_ote28_fwhm:
+    print("Calculating profiles for {:s}".format(dataset))
+    first_observation = True
     for observation in observations:
-        obs_tag, image, bstars = observation
-        n_bright += len(bstars)
-        plot.display(image, "OTE-28.2 simulated", fmin=-0.01, fmax=10.0,
-                     stars=bstars, xlim=xlim, ylim=ylim, skip=False)
-        print(np.nanmin(image), np.nanmax(image))
+        obs_id, image, stars = observation
 
         # Find profiles for all bright stars and add to list
-        row_identifier = 'OTE28', obs_tag, 'row', 'sum'  # group, image_id, axis, fit_type
-        sim_row_profile_list = photom.find_profiles(row_identifier,
+        row_identifier = dataset, obs_id, 'row', 'sum'  # group, image_id, axis, fit_type
+        sim_row_profile_list = profiler.find_profiles(row_identifier,
                                                     u_vals, v_coadd, image,
-                                                    bstars, sim_row_profile_list,
+                                                    stars, sim_row_profile_list,
                                                     method='enslitted')
-        col_identifier = 'OTE28', obs_tag, 'col', 'sum'  # group, image_id, axis, fit_type
-        sim_col_profile_list = photom.find_profiles(col_identifier,
+        col_identifier = 'OTE28', obs_id, 'col', 'sum'  # group, image_id, axis, fit_type
+        sim_col_profile_list = profiler.find_profiles(col_identifier,
                                                     u_vals, v_coadd, image,
-                                                    bstars, sim_col_profile_list,
+                                                    stars, sim_col_profile_list,
                                                     method='enslitted')
+        row_best_fit, row_fwhms = profiler.find_profile_best_fit(sim_row_profile_list)
+        col_best_fit, col_fwhms = profiler.find_profile_best_fit(sim_col_profile_list)
+        if first_observation:
+            all_row_fwhms = np.array(row_fwhms)
+            all_col_fwhms = np.array(col_fwhms)
+            first_observation = False
+        else:
+            all_row_fwhms = np.concatenate((all_row_fwhms, row_fwhms))
+            all_col_fwhms = np.concatenate((all_col_fwhms, col_fwhms))
 
+        profiler.print_profile_list('Row', sim_row_profile_list, row_best_fit)
+        profiler.print_profile_list('Column', sim_col_profile_list, col_best_fit)
+
+        title = "{:s}, Obs {:s} Along row profiles".format(dataset, obs_id)
         n_profiles = len(sim_row_profile_list)
-        fwhms = np.zeros(n_profiles)
-        for j, profile in enumerate(sim_row_profile_list):
-            identifier, x, y, params = profile
-            group, image_id, axis, fit_type = identifier
-            fit, covar = params
-            amp, fwhm, phase = fit
-            print("{:10s}{:10s}{:10.2f}{:10.3f}{:10.3f}".format(group, image_id, amp, fwhm, phase))
-            fwhms[j] = fwhm
-            all_row_fwhms.append(fwhm)
-        mean_fwhm = np.mean(fwhms)
-        sig_fwhm = np.std(fwhms)
-        print("{:10s}{:10s}{:10.2f}{:10.3f}{:10.3f}".format(group, 'Row ave.', 0.00, mean_fwhm, sig_fwhm))
-        print()
-        for j, profile in enumerate(sim_col_profile_list):
-            identifier, x, y, params = profile
-            group, image_id, axis, fit_type = identifier
-            fit, covar = params
-            amp, fwhm, phase = fit
-            print("{:10s}{:10s}{:10.2f}{:10.3f}{:10.3f}".format(group, image_id, amp, fwhm, phase))
-            fwhms[j] = fwhm
-            all_col_fwhms.append(fwhm)
-#            plot.plot_profile(profile, obs_list, axis, plot_fit=True, is_cv3=False)
-        mean_fwhm = np.mean(fwhms)
-        sig_fwhm = np.std(fwhms)
-        print("{:10s}{:10s}{:10.2f}{:10.3f}{:10.3f}".format(group, 'Col ave.', 0.00, mean_fwhm, sig_fwhm))
+        lw_list = [0.5]*n_profiles
+        lc_list = ['goldenrod']*n_profiles
+        plot.plot_profile_list(sim_row_profile_list,
+                               best_fit=row_best_fit,
+                               lc_list=lc_list, lw_list=lw_list,
+                               xlim=[-5.0, 5.0],  # Plot limits
+                               normalise=True,
+                               title=title)
+        title = "{:s}, Obs {:s} Along column profiles".format(dataset, obs_id)
+        lc_list = ['pink']*n_profiles
+        plot.plot_profile_list(sim_col_profile_list,
+                               best_fit=col_best_fit,
+                               lc_list=lc_list, lw_list=lw_list,
+                               xlim=[-5.0, 5.0],  # Plot limits
+                               normalise=True,
+                               title=title)
+    final_row_fwhm, final_row_fwhm_err = np.mean(all_row_fwhms), np.std(all_row_fwhms)
+    final_col_fwhm, final_col_fwhm_err = np.mean(all_col_fwhms), np.std(all_col_fwhms)
 
-    col_fwhms = np.array(all_col_fwhms)
-    mean_all_col_fwhm = np.mean(col_fwhms)
-    sig_all_col_fwhm = np.std(col_fwhms)
-    row_fwhms = np.array(all_row_fwhms)
-    mean_all_row_fwhm = np.mean(row_fwhms)
-    sig_all_row_fwhm = np.std(row_fwhms)
     print()
+    n_stars = all_row_fwhms.shape[0]
+    n_obs = len(observations)
     print("Dataset = {:s}".format(dataset))
-    fmt = "Along {:s} FWHM averaged over all observations = {:10.3f} +- {:10.3f}"
-    print(fmt.format('column', mean_all_col_fwhm, sig_all_col_fwhm))
-    print(fmt.format('row', mean_all_row_fwhm, sig_all_row_fwhm))
+    fmt = "FWHM of {:d} stars in {:d} observations"
+    print(fmt.format(n_stars, n_obs))
+    fmt = "{:>20s}{:7.3f} +- {:7.3f} pixels"
+    print(fmt.format('Along row    =', final_row_fwhm, final_row_fwhm_err))
+    print(fmt.format('Along column =', final_col_fwhm, final_col_fwhm_err))
 
 process_crux = False
 if process_crux:
@@ -430,8 +422,8 @@ if process_crux:
 
     sim_row_profile_list, sim_col_profile_list, sim_eef_list = [], [], []
     n_bright = 0
-    for obs_tag in obs_tags[0:2]:
-        file = simulation_dir + obs_pre + obs_tag + obs_post
+    for obs_id in obs_tags[0:2]:
+        file = simulation_dir + obs_pre + obs_id + obs_post
         print(file)
         hdu_list = fits.open(file)
         hdu = hdu_list[1]
@@ -456,10 +448,10 @@ if process_crux:
     #    print(np.nanmin(image), np.nanmax(image))
 
         # Find profiles for all bright stars and add to list
-        row_identifier = 'Sim', obs_tag, 'row', 'sum'  # group, image_id, axis, fit_type
+        row_identifier = 'Sim', obs_id, 'row', 'sum'  # group, image_id, axis, fit_type
         sim_row_profile_list = photom.find_profiles(row_identifier, u_vals, v_coadd,
                                                     image, bstars, sim_row_profile_list)
-        col_identifier = 'Sim', obs_tag, 'col', 'sum'  # group, image_id, axis, fit_type
+        col_identifier = 'Sim', obs_id, 'col', 'sum'  # group, image_id, axis, fit_type
         sim_col_profile_list = photom.find_profiles(col_identifier, u_vals, v_coadd,
                                                     image, bstars, sim_col_profile_list)
 
@@ -475,9 +467,9 @@ if process_crux:
             print("{:10s}{:10s}{:10.2f}{:10.3f}{:10.3f}".format(group, image_id, amp, fwhm, phase))
             fwhms[i] = fwhm
             plot.plot_profile(profile, obs_tags, axis, plot_fit=True, is_cv3=False)
-        mean_fwhm = np.mean(fwhms)
+        mean_row_fwhm = np.mean(fwhms)
         sig_fwhm = np.std(fwhms)
-        print("{:10s}{:10s}{:10.2f}{:10.3f}{:10.3f}".format(group, 'Row ave.', 0.00, mean_fwhm, sig_fwhm))
+        print("{:10s}{:10s}{:10.2f}{:10.3f}{:10.3f}".format(group, 'Row ave.', 0.00, mean_row_fwhm, sig_fwhm))
         print()
         for i, profile in enumerate(sim_col_profile_list):
             identifier, x, y, params = profile
@@ -487,9 +479,9 @@ if process_crux:
             print("{:10s}{:10s}{:10.2f}{:10.3f}{:10.3f}".format(group, image_id, amp, fwhm, phase))
             fwhms[i] = fwhm
 #            plot.plot_profile(profile, obs_list, axis, plot_fit=True, is_cv3=False)
-        mean_fwhm = np.mean(fwhms)
+        mean_row_fwhm = np.mean(fwhms)
         sig_fwhm = np.std(fwhms)
-        print("{:10s}{:10s}{:10.2f}{:10.3f}{:10.3f}".format(group, 'Col ave.', 0.00, mean_fwhm, sig_fwhm))
+        print("{:10s}{:10s}{:10.2f}{:10.3f}{:10.3f}".format(group, 'Col ave.', 0.00, mean_row_fwhm, sig_fwhm))
 
 print('Done')
 
